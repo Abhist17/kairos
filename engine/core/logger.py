@@ -1,0 +1,18 @@
+"""Kairos Engine — Logger setup."""
+
+import logging
+import sys
+
+
+def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
+    logger = logging.getLogger(name)
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        fmt = logging.Formatter(
+            "%(asctime)s | %(name)-28s | %(levelname)-5s | %(message)s",
+            datefmt="%H:%M:%S",
+        )
+        handler.setFormatter(fmt)
+        logger.addHandler(handler)
+    logger.setLevel(level)
+    return logger
