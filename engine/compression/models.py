@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 
 
-
 @dataclass
 class CompressionResult:
     is_compressed: bool
