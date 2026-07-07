@@ -1,0 +1,86 @@
+import os
+import requests
+from engine.pipeline.signal_generator import TradeSignal
+from data.models.market_state import MarketState
+
+
+class TelegramAlert:
+    def __init__(
+        self,
+        bot_token: str | None = None,
+        chat_id: str | None = None,
+    ):
+        self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
+        self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
+        self.enabled = bool(self.bot_token and self.chat_id)
+
+        if not self.enabled:
+            print("  [Telegram] Not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
+            print("  [Telegram] Signals will only show in terminal")
+
+    def send(self, text: str) -> bool:
+        if not self.enabled:
+            return False
+
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        try:
+            r = requests.post(url, json={
+                "chat_id": self.chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+            }, timeout=10)
+            return r.status_code == 200
+        except Exception as e:
+            print(f"  [Telegram] Send failed: {e}")
+            return False
+
+    def send_signal(self, signal: TradeSignal, state: MarketState) -> bool:
+        if not self.enabled:
+            return False
+
+        side_emoji = "🟢" if signal.option_type == "CE" else "🔴"
+        conf_emoji = "🔥" if signal.confidence > 0.6 else "⚡"
+
+        text = (
+            f"{side_emoji} <b>KAIROS SIGNAL</b> {conf_emoji}\n\n"
+            f"<b>{signal.action} {signal.symbol} {signal.strike:.0f} {signal.option_type}</b>\n\n"
+            f"📍 Spot: {signal.spot:,.2f}\n"
+            f"💰 Premium: ₹{signal.estimated_premium:.2f}\n"
+            f"🛑 SL: ₹{signal.stoploss_premium:.2f}\n"
+            f"🎯 Target: ₹{signal.target_premium:.2f}\n"
+            f"📊 R:R = 1:{signal.risk_reward:.1f}\n\n"
+            f"⏱ Survival: {signal.survival_minutes:.0f} min\n"
+            f"📈 Confidence: {signal.confidence:.0%}\n\n"
+            f"<i>Regime: {state.regime.value}\n"
+            f"Bias: {state.thesis.primary_bias.value} "
+            f"(sep: {state.thesis.separation:+.3f})\n"
+            f"Reason: {signal.reason}</i>\n\n"
+            f"⚠️ Not financial advice. You decide."
+        )
+
+        return self.send(text)
+
+    def send_session_summary(self, stats: dict) -> bool:
+        if not self.enabled:
+            return False
+
+        pnl_emoji = "✅" if stats.get("total_pnl", 0) >= 0 else "❌"
+
+        text = (
+            f"📋 <b>KAIROS SESSION SUMMARY</b>\n\n"
+            f"Total trades: {stats.get('closed', 0)}\n"
+            f"Wins: {stats.get('wins', 0)} | Losses: {stats.get('losses', 0)}\n"
+            f"Win rate: {stats.get('win_rate', 0):.1f}%\n"
+            f"{pnl_emoji} Total P&L: ₹{stats.get('total_pnl', 0):.2f}\n"
+            f"Avg P&L: ₹{stats.get('avg_pnl', 0):.2f}"
+        )
+
+        return self.send(text)
+
+    def send_startup(self, symbol: str, broker: str) -> bool:
+        return self.send(
+            f"🚀 <b>Kairos Engine Started</b>\n\n"
+            f"Symbol: {symbol}\n"
+            f"Broker: {broker}\n"
+            f"Waiting for signals..."
+        )
