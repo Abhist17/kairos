@@ -10,8 +10,8 @@ class TelegramAlert:
         bot_token: str | None = None,
         chat_id: str | None = None,
     ):
-        self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
-        self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
+        self.bot_token = bot_token or os.getenv("8827765158:AAF2KqQ-oFfl-YPoRBkHyt0-VLgRQLImYZI", "")
+        self.chat_id = chat_id or os.getenv("5705659306", "")
         self.enabled = bool(self.bot_token and self.chat_id)
 
         if not self.enabled:
