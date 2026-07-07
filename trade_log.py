@@ -14,8 +14,12 @@ Usage:
 import sys
 from data.storage.trade_tracker import TradeTracker
 
-B = "\033[1m"; R = "\033[0m"
-GRN = "\033[92m"; RED = "\033[91m"; YEL = "\033[93m"; CYN = "\033[96m"
+B = "\033[1m"
+R = "\033[0m"
+GRN = "\033[92m"
+RED = "\033[91m"
+YEL = "\033[93m"
+CYN = "\033[96m"
 
 
 def main():
@@ -44,8 +48,10 @@ def main():
 
     if cmd == "entry":
         if len(sys.argv) < 8:
-            print(f"  {RED}Usage: trade_log.py entry SYMBOL STRIKE TYPE ENTRY SL TARGET{R}")
-            print(f"  Example: trade_log.py entry NIFTY 24500 CE 148.50 104 237")
+            print(
+                f"  {RED}Usage: trade_log.py entry SYMBOL STRIKE TYPE ENTRY SL TARGET{R}"
+            )
+            print("  Example: trade_log.py entry NIFTY 24500 CE 148.50 104 237")
             tracker.close()
             return
 
@@ -58,8 +64,13 @@ def main():
         notes = " ".join(sys.argv[8:]) if len(sys.argv) > 8 else ""
 
         tid = tracker.log_entry(
-            symbol=symbol, strike=strike, option_type=opt_type,
-            entry_price=entry, stoploss=sl, target=target, notes=notes,
+            symbol=symbol,
+            strike=strike,
+            option_type=opt_type,
+            entry_price=entry,
+            stoploss=sl,
+            target=target,
+            notes=notes,
         )
 
         rr = (target - entry) / (entry - sl) if entry > sl else 0
@@ -69,7 +80,9 @@ def main():
 
     elif cmd == "exit":
         if len(sys.argv) < 4:
-            print(f"  {RED}Usage: trade_log.py exit <trade_id> <exit_price> [reason]{R}")
+            print(
+                f"  {RED}Usage: trade_log.py exit <trade_id> <exit_price> [reason]{R}"
+            )
             tracker.close()
             return
 
@@ -100,10 +113,12 @@ def main():
         else:
             print(f"\n  {B}Open Trades:{R}")
             for t in trades:
-                print(f"    #{t['id']}  {t['symbol']} {t['strike']:.0f} {t['option_type']}  "
-                      f"@ ₹{t['entry_price']:.2f}  "
-                      f"SL: ₹{t['stoploss']:.2f}  T: ₹{t['target']:.2f}  "
-                      f"({t['entry_time'][:16]})")
+                print(
+                    f"    #{t['id']}  {t['symbol']} {t['strike']:.0f} {t['option_type']}  "
+                    f"@ ₹{t['entry_price']:.2f}  "
+                    f"SL: ₹{t['stoploss']:.2f}  T: ₹{t['target']:.2f}  "
+                    f"({t['entry_time'][:16]})"
+                )
             print()
 
     elif cmd == "stats":
@@ -111,7 +126,7 @@ def main():
 
     else:
         print(f"  {RED}Unknown command: {cmd}{R}")
-        print(f"  Commands: entry, exit, open, stats")
+        print("  Commands: entry, exit, open, stats")
 
     tracker.close()
 

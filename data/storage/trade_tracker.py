@@ -75,15 +75,28 @@ class TradeTracker:
                 regime, bias, thesis_separation, status, entry_time, notes
             ) VALUES (?, ?, ?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
             """,
-            (now, symbol, strike, option_type, entry_price, stoploss, target,
-             confidence, feasibility, survival, regime, bias, separation, now, notes),
+            (
+                now,
+                symbol,
+                strike,
+                option_type,
+                entry_price,
+                stoploss,
+                target,
+                confidence,
+                feasibility,
+                survival,
+                regime,
+                bias,
+                separation,
+                now,
+                notes,
+            ),
         )
         self.conn.commit()
         return cursor.lastrowid
 
-    def log_exit(
-        self, trade_id: int, exit_price: float, reason: str = "manual"
-    ):
+    def log_exit(self, trade_id: int, exit_price: float, reason: str = "manual"):
         trade = self.conn.execute(
             "SELECT entry_price FROM trades WHERE id = ?", (trade_id,)
         ).fetchone()
@@ -127,8 +140,15 @@ class TradeTracker:
         ).fetchone()[0]
 
         if closed == 0:
-            return {"total": total, "closed": 0, "wins": 0, "losses": 0,
-                    "win_rate": 0, "avg_pnl": 0, "total_pnl": 0}
+            return {
+                "total": total,
+                "closed": 0,
+                "wins": 0,
+                "losses": 0,
+                "win_rate": 0,
+                "avg_pnl": 0,
+                "total_pnl": 0,
+            }
 
         wins = self.conn.execute(
             "SELECT COUNT(*) FROM trades WHERE status = 'CLOSED' AND pnl > 0"
@@ -149,16 +169,21 @@ class TradeTracker:
         }
 
     def print_summary(self):
-        B = "\033[1m"; R = "\033[0m"
-        GRN = "\033[92m"; RED = "\033[91m"; YEL = "\033[93m"
+        B = "\033[1m"
+        R = "\033[0m"
+        GRN = "\033[92m"
+        RED = "\033[91m"
+        YEL = "\033[93m"
 
         stats = self.get_stats()
-        wr_color = GRN if stats["win_rate"] > 55 else (RED if stats["win_rate"] < 45 else YEL)
+        wr_color = (
+            GRN if stats["win_rate"] > 55 else (RED if stats["win_rate"] < 45 else YEL)
+        )
         pnl_color = GRN if stats["total_pnl"] > 0 else RED
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"  {B}TRADE TRACKER SUMMARY{R}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         print(f"  Total trades: {stats['total']}")
         print(f"  Closed:       {stats['closed']}")
         print(f"  Wins:         {GRN}{stats['wins']}{R}")
@@ -166,7 +191,7 @@ class TradeTracker:
         print(f"  Win rate:     {wr_color}{stats['win_rate']:.1f}%{R}")
         print(f"  Avg P&L:      {pnl_color}₹{stats['avg_pnl']:.2f}{R}")
         print(f"  Total P&L:    {pnl_color}{B}₹{stats['total_pnl']:.2f}{R}")
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
 
     def close(self):
         self.conn.close()
