@@ -1,7 +1,6 @@
 """Tests for OI Gravity and Gamma Map."""
 
 import numpy as np
-import pytest
 from engine.options.oi_gravity import OIGravityTracker
 from engine.options.gamma_map import GammaGravityMap
 

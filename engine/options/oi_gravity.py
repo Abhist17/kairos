@@ -65,20 +65,29 @@ class OIGravityTracker:
         n = len(strikes)
         if n == 0:
             return OIGravityResult(
-                call_gravity=spot, put_gravity=spot,
-                combined_gravity=spot, gravity_velocity=0.0,
-                max_pain=spot, pcr_overall=1.0,
+                call_gravity=spot,
+                put_gravity=spot,
+                combined_gravity=spot,
+                gravity_velocity=0.0,
+                max_pain=spot,
+                pcr_overall=1.0,
             )
 
         # Call gravity: OI-weighted average strike
         total_call = np.sum(call_oi)
         total_put = np.sum(put_oi)
 
-        call_grav = float(np.average(strikes, weights=call_oi)) if total_call > 0 else spot
+        call_grav = (
+            float(np.average(strikes, weights=call_oi)) if total_call > 0 else spot
+        )
         put_grav = float(np.average(strikes, weights=put_oi)) if total_put > 0 else spot
 
         total_oi = call_oi + put_oi
-        combined = float(np.average(strikes, weights=total_oi)) if np.sum(total_oi) > 0 else spot
+        combined = (
+            float(np.average(strikes, weights=total_oi))
+            if np.sum(total_oi) > 0
+            else spot
+        )
 
         # Max pain: strike minimizing total intrinsic value
         max_pain = self._calc_max_pain(strikes, call_oi, put_oi)
@@ -97,12 +106,14 @@ class OIGravityTracker:
         strike_data = []
         for i in range(n):
             s_pcr = float(put_oi[i] / call_oi[i]) if call_oi[i] > 0 else 99.0
-            strike_data.append(StrikeOI(
-                strike=float(strikes[i]),
-                call_oi=float(call_oi[i]),
-                put_oi=float(put_oi[i]),
-                pcr=round(s_pcr, 2),
-            ))
+            strike_data.append(
+                StrikeOI(
+                    strike=float(strikes[i]),
+                    call_oi=float(call_oi[i]),
+                    put_oi=float(put_oi[i]),
+                    pcr=round(s_pcr, 2),
+                )
+            )
 
         return OIGravityResult(
             call_gravity=round(call_grav, 2),
@@ -140,16 +151,22 @@ class OIGravityTracker:
         """Generate synthetic OI distribution for testing."""
         atm = round(spot / self.strike_step) * self.strike_step
         half = self.n_strikes // 2
-        strikes = np.array([
-            atm + (i - half) * self.strike_step for i in range(self.n_strikes)
-        ])
+        strikes = np.array(
+            [atm + (i - half) * self.strike_step for i in range(self.n_strikes)]
+        )
 
         # Calls: OI peaks slightly above spot
         call_center = atm + self.strike_step
-        call_oi = np.exp(-0.5 * ((strikes - call_center) / (3 * self.strike_step)) ** 2) * 50000
+        call_oi = (
+            np.exp(-0.5 * ((strikes - call_center) / (3 * self.strike_step)) ** 2)
+            * 50000
+        )
 
         # Puts: OI peaks slightly below spot
         put_center = atm - self.strike_step
-        put_oi = np.exp(-0.5 * ((strikes - put_center) / (3 * self.strike_step)) ** 2) * 45000
+        put_oi = (
+            np.exp(-0.5 * ((strikes - put_center) / (3 * self.strike_step)) ** 2)
+            * 45000
+        )
 
         return strikes, call_oi, put_oi

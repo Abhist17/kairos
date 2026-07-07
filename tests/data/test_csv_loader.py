@@ -1,8 +1,6 @@
 """Tests for CSV Loader."""
 
 import pytest
-import tempfile
-import os
 from data.collectors.csv_loader import CSVLoader
 
 
@@ -12,8 +10,10 @@ def sample_csv(tmp_path):
     with open(path, "w") as f:
         f.write("timestamp,open,high,low,close,volume\n")
         for i in range(200):
-            f.write(f"2025-01-06 09:{15 + i // 60:02d}:{i % 60:02d},"
-                    f"{25000 + i},{25005 + i},{24995 + i},{25002 + i},{10000 + i}\n")
+            f.write(
+                f"2025-01-06 09:{15 + i // 60:02d}:{i % 60:02d},"
+                f"{25000 + i},{25005 + i},{24995 + i},{25002 + i},{10000 + i}\n"
+            )
     return path
 
 

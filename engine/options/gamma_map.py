@@ -33,6 +33,7 @@ class StrikeGamma:
 @dataclass
 class GammaMapResult:
     """All gamma values are ESTIMATED — exact dealer positioning is unknown."""
+
     total_gamma_exposure: float
     gamma_flip_strike: float  # price where net gamma flips sign
     max_gamma_strike: float
@@ -57,15 +58,25 @@ class GammaGravityMap:
         if strikes is None or call_oi is None or put_oi is None:
             atm = round(spot / self.strike_step) * self.strike_step
             half = self.n_strikes // 2
-            strikes = np.array([
-                atm + (i - half) * self.strike_step for i in range(self.n_strikes)
-            ])
-            call_oi = np.exp(
-                -0.5 * ((strikes - (atm + self.strike_step)) / (3 * self.strike_step)) ** 2
-            ) * 50000
-            put_oi = np.exp(
-                -0.5 * ((strikes - (atm - self.strike_step)) / (3 * self.strike_step)) ** 2
-            ) * 45000
+            strikes = np.array(
+                [atm + (i - half) * self.strike_step for i in range(self.n_strikes)]
+            )
+            call_oi = (
+                np.exp(
+                    -0.5
+                    * ((strikes - (atm + self.strike_step)) / (3 * self.strike_step))
+                    ** 2
+                )
+                * 50000
+            )
+            put_oi = (
+                np.exp(
+                    -0.5
+                    * ((strikes - (atm - self.strike_step)) / (3 * self.strike_step))
+                    ** 2
+                )
+                * 45000
+            )
 
         n = len(strikes)
         concentration = []
@@ -99,13 +110,15 @@ class GammaGravityMap:
 
             prev_net = net
 
-            concentration.append(StrikeGamma(
-                strike=k,
-                estimated_gamma=round(g, 6),
-                call_gamma_exposure=round(call_gex, 2),
-                put_gamma_exposure=round(put_gex, 2),
-                net_gamma=round(net, 2),
-            ))
+            concentration.append(
+                StrikeGamma(
+                    strike=k,
+                    estimated_gamma=round(g, 6),
+                    call_gamma_exposure=round(call_gex, 2),
+                    put_gamma_exposure=round(put_gex, 2),
+                    net_gamma=round(net, 2),
+                )
+            )
 
         if total_gex > 0:
             note = "ESTIMATED: positive gamma environment (stabilizing)"
@@ -127,6 +140,8 @@ class GammaGravityMap:
         if iv <= 0 or dte_years <= 0 or spot <= 0:
             return 0.0
 
-        d1 = (np.log(spot / strike) + 0.5 * iv ** 2 * dte_years) / (iv * np.sqrt(dte_years))
-        gamma = np.exp(-0.5 * d1 ** 2) / (spot * iv * np.sqrt(2 * np.pi * dte_years))
+        d1 = (np.log(spot / strike) + 0.5 * iv**2 * dte_years) / (
+            iv * np.sqrt(dte_years)
+        )
+        gamma = np.exp(-0.5 * d1**2) / (spot * iv * np.sqrt(2 * np.pi * dte_years))
         return float(gamma)

@@ -6,7 +6,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 import numpy as np
 import json
-import asyncio
 
 from engine.pipeline.market_pipeline import MarketPipeline
 from engine.options.oi_gravity import OIGravityTracker
@@ -87,7 +86,9 @@ async def stream(ws: WebSocket):
             v = np.array(data["volumes"])
             iv = np.array(data["iv_series"]) if "iv_series" in data else None
 
-            state = pipeline.process(c, h, lo, o, v, iv, symbol=data.get("symbol", "NIFTY"))
+            state = pipeline.process(
+                c, h, lo, o, v, iv, symbol=data.get("symbol", "NIFTY")
+            )
             await ws.send_text(state.model_dump_json())
     except WebSocketDisconnect:
         pass
