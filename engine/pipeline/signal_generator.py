@@ -1,13 +1,14 @@
 """
-Kairos Engine — Trade Signal Generator
+Kairos Engine — Trade Signal Generator V2
 
-Sits on top of the pipeline. When ENTRY_WINDOW_OPEN fires,
-this picks the optimal strike and generates an actionable signal.
-
-Output example:
-    ▶ BUY  NIFTY 24500 CE  @ ₹148
-      SL: ₹104  │  Target: ₹236  │  R:R 1:2.0
-      Survival: 14 min  │  Confidence: 0.72
+Filters applied based on backtest failures:
+1. Opening range exclusion (first 30 min)
+2. 10-minute cooldown between signals
+3. Regime filter (only TREND_EXPANSION + COMPRESSION)
+4. Momentum confirmation (2 candles in thesis direction)
+5. Higher thesis separation (0.20 minimum)
+6. IV overexpanded block
+7. Move feasibility floor (>= 1.0)
 """
 
 import numpy as np
@@ -15,21 +16,33 @@ from datetime import datetime
 
 from engine.pipeline.market_pipeline import MarketPipeline
 from engine.options.strike_selector import StrikeSelector, TradeSignal
-from engine.core.enums import EntryWindow
+from engine.core.enums import EntryWindow, MarketBias, IVState
+from engine.core.config import TradeFilterConfig
+from engine.features.multi_timeframe import MultiTimeframe
 from engine.core.types import FloatArray
 from data.models.market_state import MarketState
 
 
 class SignalGenerator:
-    def __init__(self, strike_step: float = 50.0):
+    def __init__(
+        self,
+        strike_step: float = 50.0,
+        filters: TradeFilterConfig | None = None,
+    ):
         self.pipeline = MarketPipeline()
         self.selector = StrikeSelector(strike_step=strike_step)
+        self.filters = filters or TradeFilterConfig()
+        self.mtf = MultiTimeframe(resample_factor=7)
         self._last_signal_time: datetime | None = None
-        self._cooldown_seconds: int = 120  # no repeat signal within 2 min
+        self._rejection_reason: str = ""
 
     @property
     def min_candles(self) -> int:
         return self.pipeline.min_candles
+
+    @property
+    def last_rejection(self) -> str:
+        return self._rejection_reason
 
     def process(
         self,
@@ -43,10 +56,7 @@ class SignalGenerator:
         timestamp: datetime | None = None,
         dte_minutes: float = 375.0,
     ) -> tuple[MarketState, TradeSignal | None]:
-        """
-        Run full pipeline and generate trade signal if entry window opens.
-        Returns (MarketState, TradeSignal or None).
-        """
+
         state = self.pipeline.process(
             closes,
             highs,
@@ -59,44 +69,239 @@ class SignalGenerator:
         )
 
         signal = None
+        self._rejection_reason = ""
 
         if state.entry_window == EntryWindow.OPEN:
-            # Cooldown check
-            now = timestamp or datetime.now()
-            if self._last_signal_time:
-                elapsed = (now - self._last_signal_time).total_seconds()
-                if elapsed < self._cooldown_seconds:
-                    return state, None
-
-            # Calculate expected move from recent price action
-            if len(closes) > 20:
-                recent_std = float(np.std(np.diff(closes[-20:])))
-                expected_move = recent_std * 3.0  # 3-sigma move
-            else:
-                expected_move = 30.0
-
-            # Get IV
-            iv = state.iv.current_iv if state.iv.current_iv > 0 else 0.15
-
-            signal = self.selector.select(
-                spot=state.last_price,
-                bias=state.thesis.primary_bias,
-                expected_move=expected_move,
-                iv=iv,
-                dte_minutes=dte_minutes,
-                regime_confidence=state.regime_metrics.regime_confidence,
-                thesis_separation=state.thesis.separation,
-                symbol=symbol,
+            signal = self._try_generate_signal(
+                state, closes, timestamp or datetime.now(), dte_minutes, symbol
             )
-
-            if signal:
-                self._last_signal_time = now
 
         return state, signal
 
+    def _try_generate_signal(
+        self,
+        state: MarketState,
+        closes: FloatArray,
+        now: datetime,
+        dte_minutes: float,
+        symbol: str,
+    ) -> TradeSignal | None:
+        f = self.filters
+
+        # --- Filter 1: Opening range ---
+        market_open = now.replace(
+            hour=f.market_open_hour, minute=f.market_open_minute, second=0
+        )
+        minutes_since_open = (now - market_open).total_seconds() / 60
+
+        if 0 < minutes_since_open < f.opening_range_skip_minutes:
+            self._rejection_reason = (
+                f"Opening range: {minutes_since_open:.0f}m since open, "
+                f"need {f.opening_range_skip_minutes}m"
+            )
+            return None
+        # --- Filter 3b: Multi-timeframe alignment ---
+        mtf_result = (
+            self.mtf.analyze(
+                closes, highs, lows, state.regime, state.thesis.primary_bias
+            )
+            if len(closes) > 0
+            else None
+        )
+        if mtf_result and not mtf_result.aligned:
+            self._rejection_reason = (
+                f"MTF conflict: primary={mtf_result.primary_bias.value} "
+                f"but higher TF={mtf_result.higher_bias.value} "
+                f"({mtf_result.higher_regime.value})"
+            )
+            return None
+
+        # --- Filter 2: Signal cooldown ---
+        if self._last_signal_time:
+            elapsed = (now - self._last_signal_time).total_seconds() / 60
+            if elapsed < f.signal_cooldown_minutes:
+                self._rejection_reason = (
+                    f"Cooldown: {elapsed:.1f}m since last signal, "
+                    f"need {f.signal_cooldown_minutes}m"
+                )
+                return None
+        # --- Filter 3b: Multi-timeframe alignment ---
+        mtf_result = (
+            self.mtf.analyze(
+                closes, highs, lows, state.regime, state.thesis.primary_bias
+            )
+            if len(closes) > 0
+            else None
+        )
+        if mtf_result and not mtf_result.aligned:
+            self._rejection_reason = (
+                f"MTF conflict: primary={mtf_result.primary_bias.value} "
+                f"but higher TF={mtf_result.higher_bias.value} "
+                f"({mtf_result.higher_regime.value})"
+            )
+            return None
+
+        # --- Filter 3: Regime filter ---
+        if state.regime not in f.allowed_regimes:
+            self._rejection_reason = (
+                f"Regime {state.regime.value} not in allowed: "
+                f"{[r.value for r in f.allowed_regimes]}"
+            )
+            return None
+        # --- Filter 3b: Multi-timeframe alignment ---
+        mtf_result = self.mtf.analyze(
+            closes, highs, lows, state.regime, state.thesis.primary_bias
+        )
+        if not mtf_result.aligned:
+            self._rejection_reason = (
+                f"MTF conflict: primary={mtf_result.primary_bias.value} "
+                f"but higher TF={mtf_result.higher_bias.value} "
+                f"({mtf_result.higher_regime.value})"
+            )
+            return None
+
+        # --- Filter 4: Thesis separation ---
+        if state.thesis.separation < f.min_thesis_separation:
+            self._rejection_reason = (
+                f"Thesis separation {state.thesis.separation:.3f} < "
+                f"{f.min_thesis_separation}"
+            )
+            return None
+        # --- Filter 3b: Multi-timeframe alignment ---
+        mtf_result = (
+            self.mtf.analyze(
+                closes, highs, lows, state.regime, state.thesis.primary_bias
+            )
+            if len(closes) > 0
+            else None
+        )
+        if mtf_result and not mtf_result.aligned:
+            self._rejection_reason = (
+                f"MTF conflict: primary={mtf_result.primary_bias.value} "
+                f"but higher TF={mtf_result.higher_bias.value} "
+                f"({mtf_result.higher_regime.value})"
+            )
+            return None
+
+        # --- Filter 5: IV overexpanded block ---
+        if f.block_overexpanded_iv and state.iv.state == IVState.OVEREXPANDED:
+            self._rejection_reason = "IV is OVEREXPANDED — options too expensive"
+            return None
+
+        # --- Filter 6: Momentum confirmation ---
+        n_confirm = f.confirmation_candles
+        if len(closes) < n_confirm + 1:
+            self._rejection_reason = "Not enough candles for confirmation"
+            return None
+
+        # Check last N candles moved in thesis direction
+        recent_moves = np.diff(closes[-(n_confirm + 1) :])
+        bias = state.thesis.primary_bias
+
+        if bias == MarketBias.BULLISH:
+            confirmed = all(m > 0 for m in recent_moves)
+        elif bias == MarketBias.BEARISH:
+            confirmed = all(m < 0 for m in recent_moves)
+        else:
+            self._rejection_reason = "Neutral bias — no direction to confirm"
+            return None
+
+        if not confirmed:
+            self._rejection_reason = (
+                f"Momentum not confirmed: last {n_confirm} candles "
+                f"not all in {bias.value} direction"
+            )
+            return None
+        # --- Filter 3b: Multi-timeframe alignment ---
+        mtf_result = (
+            self.mtf.analyze(
+                closes, highs, lows, state.regime, state.thesis.primary_bias
+            )
+            if len(closes) > 0
+            else None
+        )
+        if mtf_result and not mtf_result.aligned:
+            self._rejection_reason = (
+                f"MTF conflict: primary={mtf_result.primary_bias.value} "
+                f"but higher TF={mtf_result.higher_bias.value} "
+                f"({mtf_result.higher_regime.value})"
+            )
+            return None
+
+        # --- All filters passed, generate signal ---
+        if len(closes) > 20:
+            recent_std = float(np.std(np.diff(closes[-20:])))
+            expected_move = recent_std * 3.0
+        else:
+            expected_move = 30.0
+
+        iv = state.iv.current_iv if state.iv.current_iv > 0 else 0.15
+
+        signal = self.selector.select(
+            spot=state.last_price,
+            bias=bias,
+            expected_move=expected_move,
+            iv=iv,
+            dte_minutes=dte_minutes,
+            regime_confidence=state.regime_metrics.regime_confidence,
+            thesis_separation=state.thesis.separation,
+            symbol=symbol,
+        )
+
+        # --- Filter 7: Move feasibility floor ---
+        if signal and signal.all_candidates:
+            best = signal.all_candidates[0]
+            if best.move_feasibility < f.min_move_feasibility:
+                self._rejection_reason = (
+                    f"Feasibility {best.move_feasibility:.2f} < "
+                    f"{f.min_move_feasibility}"
+                )
+                return None
+        # --- Filter 3b: Multi-timeframe alignment ---
+        mtf_result = (
+            self.mtf.analyze(
+                closes, highs, lows, state.regime, state.thesis.primary_bias
+            )
+            if len(closes) > 0
+            else None
+        )
+        if mtf_result and not mtf_result.aligned:
+            self._rejection_reason = (
+                f"MTF conflict: primary={mtf_result.primary_bias.value} "
+                f"but higher TF={mtf_result.higher_bias.value} "
+                f"({mtf_result.higher_regime.value})"
+            )
+            return None
+
+        # --- Filter 8: Minimum confidence ---
+        if signal and signal.confidence < f.min_signal_confidence:
+            self._rejection_reason = (
+                f"Confidence {signal.confidence:.0%} < {f.min_signal_confidence:.0%}"
+            )
+            return None
+        # --- Filter 3b: Multi-timeframe alignment ---
+        mtf_result = (
+            self.mtf.analyze(
+                closes, highs, lows, state.regime, state.thesis.primary_bias
+            )
+            if len(closes) > 0
+            else None
+        )
+        if mtf_result and not mtf_result.aligned:
+            self._rejection_reason = (
+                f"MTF conflict: primary={mtf_result.primary_bias.value} "
+                f"but higher TF={mtf_result.higher_bias.value} "
+                f"({mtf_result.higher_regime.value})"
+            )
+            return None
+
+        if signal:
+            self._last_signal_time = now
+
+        return signal
+
 
 def format_signal(signal: TradeSignal) -> str:
-    """Format a trade signal for terminal display."""
     if signal is None:
         return ""
 
@@ -156,7 +361,6 @@ def format_signal(signal: TradeSignal) -> str:
         f"  {B}{side_color}╚══════════════════════════════════════════════════════════════╝{R}"
     )
 
-    # Show top 3 candidates
     lines.append(f"  {MAG}Alternative strikes:{R}")
     for c in signal.all_candidates[:3]:
         flag = " ◀ SELECTED" if c.strike == signal.strike else ""

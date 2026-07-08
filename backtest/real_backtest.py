@@ -18,6 +18,7 @@ import os
 import sqlite3
 import numpy as np
 from pathlib import Path
+from engine.core.enums import EntryWindow
 
 from engine.pipeline.signal_generator import SignalGenerator
 
@@ -281,6 +282,12 @@ class RealBacktest:
                         result,
                     ),
                 )
+
+                # Log rejection if entry window open but signal filtered
+                if state.entry_window == EntryWindow.OPEN and not signal:
+                    rejection = sig_gen.last_rejection
+                    if rejection and (i - min_c) % 50 == 0:
+                        print(f"  {GRY}  filtered: {rejection}{R}")
 
                 signals.append(
                     {
