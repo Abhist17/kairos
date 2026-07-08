@@ -1,9 +1,4 @@
-"""
-Kairos Engine — Market Pipeline
-
-Single entry point that orchestrates all engines.
-Feed it OHLCV arrays, get back a complete MarketState.
-"""
+"""Kairos Engine — Market Pipeline (passes regime metrics to state machine)."""
 
 import numpy as np
 from datetime import datetime
@@ -19,28 +14,13 @@ from engine.flow.pressure import PressureAnalyzer
 from engine.scoring.thesis import ThesisEngine
 from engine.state_machine.machine import EntryStateMachine
 from data.models.market_state import (
-    MarketState,
-    RegimeMetrics,
-    CompressionMetrics,
-    StructureMetrics,
-    IVMetrics,
-    OptionMetrics,
-    FlowMetrics,
-    ThesisMetrics,
-    StateMachineMetrics,
-    GateInfo,
+    MarketState, RegimeMetrics, CompressionMetrics, StructureMetrics,
+    IVMetrics, OptionMetrics, FlowMetrics, ThesisMetrics,
+    StateMachineMetrics, GateInfo,
 )
 
 
 class MarketPipeline:
-    """
-    Orchestrates the full Kairos pipeline.
-
-    Usage:
-        pipeline = MarketPipeline()
-        state = pipeline.process(closes, highs, lows, opens, volumes, iv_series)
-    """
-
     def __init__(self, config: RegimeConfig | None = None):
         self.config = config or RegimeConfig()
         self.regime_clf = RegimeClassifier(self.config)
@@ -73,27 +53,17 @@ class MarketPipeline:
 
         if iv_series is None:
             rets = np.diff(np.log(closes)) if n > 1 else np.array([0.0])
-            rolling = np.array(
-                [
-                    np.std(rets[max(0, i - 20) : i], ddof=1) if i > 1 else 0.01
-                    for i in range(1, len(rets) + 1)
-                ]
-            )
+            rolling = np.array([
+                np.std(rets[max(0, i - 20):i], ddof=1) if i > 1 else 0.01
+                for i in range(1, len(rets) + 1)
+            ])
             iv_series = rolling * np.sqrt(93750)
 
-        # 1. Regime
         reg = self.regime_clf.classify(closes, highs, lows)
-
-        # 2. Compression
         comp = self.comp_det.detect(closes, highs, lows)
-
-        # 3. Structure
         struct = self.struct_ana.analyze(closes, highs, lows, volumes, price)
-
-        # 4. IV
         iv = self.iv_clf.classify(iv_series)
 
-        # 5. Options Efficiency
         strike = round(price / 50) * 50
         dte_min = max(60.0, 375.0)
         moneyness = abs(price - strike) / price
@@ -105,25 +75,17 @@ class MarketPipeline:
         req_move = abs(price - strike) + 5.0
 
         opt = self.opt_eng.evaluate(
-            spot=price,
-            strike=strike,
-            delta=syn_delta,
-            gamma=syn_gamma,
-            theta=syn_theta,
-            vega=syn_vega,
-            expected_move=exp_move,
-            required_move=req_move,
+            spot=price, strike=strike, delta=syn_delta,
+            gamma=syn_gamma, theta=syn_theta, vega=syn_vega,
+            expected_move=exp_move, required_move=req_move,
             dte_minutes=dte_min,
         )
 
-        # 6. Flow
         target = struct.nearest_zone.center if struct.nearest_zone else price
         flow = self.press_ana.analyze(closes, highs, lows, opens, target)
 
-        # 7. Thesis
         thesis = self.thesis_eng.score(
-            regime=reg.regime,
-            bias=reg.bias,
+            regime=reg.regime, bias=reg.bias,
             regime_confidence=reg.confidence,
             compression_score=comp.compression_score,
             is_compressed=comp.is_compressed,
@@ -135,9 +97,12 @@ class MarketPipeline:
             option_efficient=opt.is_efficient,
         )
 
-        # 8. State Machine
+        # State machine now gets regime metrics for Path B
         sm = self.state_machine.evaluate(
             regime=reg.regime,
+            bias=reg.bias,
+            regime_confidence=reg.confidence,
+            efficiency_ratio=reg.efficiency_ratio,
             structure_score=struct.structure_score,
             nearest_zone_dist_pct=struct.nearest_zone_distance_pct,
             compression_score=comp.compression_score,
@@ -150,16 +115,11 @@ class MarketPipeline:
         )
 
         return MarketState(
-            symbol=symbol,
-            timestamp=ts,
-            last_price=price,
-            candle_close=price,
-            candle_high=float(highs[-1]),
-            candle_low=float(lows[-1]),
-            candle_open=float(opens[-1]),
+            symbol=symbol, timestamp=ts, last_price=price,
+            candle_close=price, candle_high=float(highs[-1]),
+            candle_low=float(lows[-1]), candle_open=float(opens[-1]),
             candle_volume=float(volumes[-1]),
-            regime=reg.regime,
-            bias=reg.bias,
+            regime=reg.regime, bias=reg.bias,
             regime_metrics=RegimeMetrics(
                 efficiency_ratio=reg.efficiency_ratio,
                 directional_persistence=reg.directional_persistence,
@@ -178,8 +138,7 @@ class MarketPipeline:
                 compression_score=comp.compression_score,
                 atr_contraction=comp.atr_contraction,
                 range_contraction=comp.range_contraction,
-                rv_decay=comp.rv_decay,
-                bbw_percentile=comp.bbw_percentile,
+                rv_decay=comp.rv_decay, bbw_percentile=comp.bbw_percentile,
                 compression_velocity=comp.compression_velocity,
                 compression_half_life=comp.compression_half_life,
                 candles_compressed=comp.candles_compressed,
@@ -189,23 +148,15 @@ class MarketPipeline:
                 structure_score=struct.structure_score,
                 nearest_zone_distance=struct.nearest_zone_distance,
                 nearest_zone_distance_pct=struct.nearest_zone_distance_pct,
-                nearest_zone_center=struct.nearest_zone.center
-                if struct.nearest_zone
-                else 0,
-                nearest_zone_confluence=struct.nearest_zone.confluence
-                if struct.nearest_zone
-                else 0,
-                above_zones=struct.above_zones,
-                below_zones=struct.below_zones,
+                nearest_zone_center=struct.nearest_zone.center if struct.nearest_zone else 0,
+                nearest_zone_confluence=struct.nearest_zone.confluence if struct.nearest_zone else 0,
+                above_zones=struct.above_zones, below_zones=struct.below_zones,
                 inside_zone=struct.inside_zone,
-                total_levels=len(struct.levels),
-                total_zones=len(struct.zones),
+                total_levels=len(struct.levels), total_zones=len(struct.zones),
             ),
             iv=IVMetrics(
-                state=iv.state,
-                current_iv=iv.current_iv,
-                iv_percentile=iv.iv_percentile,
-                iv_velocity=iv.iv_velocity,
+                state=iv.state, current_iv=iv.current_iv,
+                iv_percentile=iv.iv_percentile, iv_velocity=iv.iv_velocity,
             ),
             option=OptionMetrics(
                 is_efficient=opt.is_efficient,
@@ -213,10 +164,8 @@ class MarketPipeline:
                 gamma_theta_ratio=opt.gamma_theta_ratio,
                 theta_survival_minutes=opt.theta_survival_minutes,
                 move_feasibility=opt.move_feasibility,
-                strike=opt.strike,
-                delta=opt.delta,
-                gamma=opt.gamma,
-                theta=opt.theta,
+                strike=opt.strike, delta=opt.delta,
+                gamma=opt.gamma, theta=opt.theta,
             ),
             flow=FlowMetrics(
                 pressure_score=flow.pressure_score,
@@ -235,13 +184,9 @@ class MarketPipeline:
                 thesis_valid=thesis.thesis_valid,
             ),
             state_machine=StateMachineMetrics(
-                gates=[
-                    GateInfo(name=g.name, ready=g.ready, reason=g.reason)
-                    for g in sm.gates
-                ],
+                gates=[GateInfo(name=g.name, ready=g.ready, reason=g.reason) for g in sm.gates],
                 estimated_window_seconds=sm.estimated_window_seconds,
                 thesis_survival_minutes=sm.thesis_survival_minutes,
             ),
-            trade_state=sm.state,
-            entry_window=sm.entry_window,
+            trade_state=sm.state, entry_window=sm.entry_window,
         )
