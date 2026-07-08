@@ -71,8 +71,13 @@ class EntryStateMachine:
 
         # Try Path B first (trend following) — catches fast moves
         path_b = self._evaluate_path_b(
-            regime, bias, regime_confidence, efficiency_ratio,
-            option_efficient, theta_survival, thesis_valid,
+            regime,
+            bias,
+            regime_confidence,
+            efficiency_ratio,
+            option_efficient,
+            theta_survival,
+            thesis_valid,
             thesis_separation,
         )
 
@@ -81,9 +86,15 @@ class EntryStateMachine:
 
         # Fall back to Path A (breakout)
         return self._evaluate_path_a(
-            regime, structure_score, nearest_zone_dist_pct,
-            compression_score, is_compressed, pressure_score,
-            option_efficient, theta_survival, thesis_valid,
+            regime,
+            structure_score,
+            nearest_zone_dist_pct,
+            compression_score,
+            is_compressed,
+            pressure_score,
+            option_efficient,
+            theta_survival,
+            thesis_valid,
             thesis_separation,
         )
 
@@ -121,7 +132,9 @@ class EntryStateMachine:
             if regime not in self.trend_regimes:
                 reason = f"regime {regime.value} not trending"
             elif regime_confidence < self.trend_min_confidence:
-                reason = f"confidence {regime_confidence:.2f} < {self.trend_min_confidence}"
+                reason = (
+                    f"confidence {regime_confidence:.2f} < {self.trend_min_confidence}"
+                )
             else:
                 reason = f"ER {efficiency_ratio:.3f} < {self.trend_min_er}"
         gates.append(GateStatus("STRONG_TREND", trend_ok, reason))
@@ -138,14 +151,13 @@ class EntryStateMachine:
             current_state = TradeState.COMPRESSION
 
         # Gate 3: Strong thesis
-        thesis_ok = (
-            thesis_valid
-            and thesis_separation >= self.trend_min_separation
-        )
+        thesis_ok = thesis_valid and thesis_separation >= self.trend_min_separation
         reason = ""
         if not thesis_ok:
             reason = f"separation {thesis_separation:.3f} < {self.trend_min_separation}"
-        gates.append(GateStatus("THESIS_STRONG", thesis_ok and dir_ok and trend_ok, reason))
+        gates.append(
+            GateStatus("THESIS_STRONG", thesis_ok and dir_ok and trend_ok, reason)
+        )
 
         if trend_ok and dir_ok and thesis_ok:
             current_state = TradeState.PRESSURE_BUILDING
@@ -153,7 +165,11 @@ class EntryStateMachine:
         # Gate 4: Option efficiency
         opt_ok = option_efficient
         reason = "" if opt_ok else "option not efficient"
-        gates.append(GateStatus("OPTION_EFF", opt_ok and thesis_ok and dir_ok and trend_ok, reason))
+        gates.append(
+            GateStatus(
+                "OPTION_EFF", opt_ok and thesis_ok and dir_ok and trend_ok, reason
+            )
+        )
 
         if trend_ok and dir_ok and thesis_ok and opt_ok:
             current_state = TradeState.OPTION_EFFICIENCY
@@ -166,7 +182,9 @@ class EntryStateMachine:
             current_state = TradeState.ENTRY_WINDOW_OPEN
 
         # Pad gates to match 6-gate display
-        gates.append(GateStatus("FLOW_CONF", all_ready, "" if all_ready else "path B: N/A"))
+        gates.append(
+            GateStatus("FLOW_CONF", all_ready, "" if all_ready else "path B: N/A")
+        )
         gates.append(GateStatus("ENTRY", all_ready, "" if all_ready else "waiting"))
 
         window_secs = int(45 + regime_confidence * 75) if all_ready else 0
