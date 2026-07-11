@@ -1,18 +1,16 @@
 """
-Kairos Engine — Multi-Timeframe Confirmation
+Kairos Engine — Multi-Timeframe Confirmation V2
 
-Problem: 2-min chart shows TREND_EXPANSION but 15-min chart
-is actually in MEAN_REVERSION. The 2-min trend is just noise
-within a larger range.
+User watches 1m, 5m, 15m on TradingView.
+We resample 2m candles to approximate 5m and 15m,
+then check if all timeframes agree on direction.
 
-Solution: Resample candles to higher timeframe, run regime
-classifier on both, require agreement.
+For a signal to pass:
+  - Primary (2m): must show the setup
+  - 5m equivalent: must agree on bias (or be neutral)
+  - 15m equivalent: must agree on bias (or be neutral)
 
-If 2m says TREND_EXPANSION + BULLISH
-and 15m also says BULLISH (any trending regime)
-→ CONFIRMED
-
-If they disagree → CONFLICTING → don't signal
+If 2m says BEARISH but 15m says BULLISH → CONFLICT → no signal
 """
 
 import numpy as np
@@ -26,20 +24,20 @@ from dataclasses import dataclass
 class MTFResult:
     primary_regime: MarketRegime
     primary_bias: MarketBias
-    higher_regime: MarketRegime
+    mid_regime: MarketRegime  # ~5m
+    mid_bias: MarketBias
+    higher_regime: MarketRegime  # ~15m
     higher_bias: MarketBias
-    aligned: bool  # both timeframes agree on direction
-    higher_tf_label: str  # e.g. "15m"
+    aligned: bool
+    conflict_reason: str = ""
 
 
 class MultiTimeframe:
     def __init__(self, resample_factor: int = 7):
-        """
-        resample_factor: how many primary candles make one higher TF candle.
-        For 2m primary → factor 7 ≈ ~15 minute higher TF.
-        """
-        self.resample_factor = resample_factor
-        self.higher_clf = RegimeClassifier()
+        self.mid_factor = 3  # 2m * 3 = ~6m (approximates 5m)
+        self.high_factor = resample_factor  # 2m * 7 = ~14m (approximates 15m)
+        self.mid_clf = RegimeClassifier()
+        self.high_clf = RegimeClassifier()
 
     def analyze(
         self,
@@ -49,62 +47,80 @@ class MultiTimeframe:
         primary_regime: MarketRegime,
         primary_bias: MarketBias,
     ) -> MTFResult:
-        factor = self.resample_factor
         n = len(closes)
 
-        if n < factor * 20:  # need enough for higher TF lookback
-            return MTFResult(
-                primary_regime=primary_regime,
-                primary_bias=primary_bias,
-                higher_regime=MarketRegime.UNKNOWN,
-                higher_bias=MarketBias.NEUTRAL,
-                aligned=True,  # don't block if insufficient data
-                higher_tf_label=f"{factor}x",
-            )
-
-        # Resample to higher timeframe
-        htf_closes, htf_highs, htf_lows = self._resample(closes, highs, lows, factor)
-
-        if len(htf_closes) < 20:
-            return MTFResult(
-                primary_regime=primary_regime,
-                primary_bias=primary_bias,
-                higher_regime=MarketRegime.UNKNOWN,
-                higher_bias=MarketBias.NEUTRAL,
-                aligned=True,
-                higher_tf_label=f"{factor}x",
-            )
-
-        # Classify higher TF
-        result = self.higher_clf.classify(htf_closes, htf_highs, htf_lows)
-
-        # Check alignment: biases must agree or higher be neutral
-        aligned = (
-            result.bias == primary_bias
-            or result.bias == MarketBias.NEUTRAL
-            or primary_bias == MarketBias.NEUTRAL
+        # Default: aligned if not enough data
+        default = MTFResult(
+            primary_regime=primary_regime,
+            primary_bias=primary_bias,
+            mid_regime=MarketRegime.UNKNOWN,
+            mid_bias=MarketBias.NEUTRAL,
+            higher_regime=MarketRegime.UNKNOWN,
+            higher_bias=MarketBias.NEUTRAL,
+            aligned=True,
         )
+
+        # Need enough data for both timeframes
+        min_needed = self.high_factor * 25
+        if n < min_needed:
+            return default
+
+        # Analyze mid timeframe (~5m)
+        mid_c, mid_h, mid_l = self._resample(closes, highs, lows, self.mid_factor)
+        if len(mid_c) >= 20:
+            mid_result = self.mid_clf.classify(mid_c, mid_h, mid_l)
+            mid_regime = mid_result.regime
+            mid_bias = mid_result.bias
+        else:
+            mid_regime = MarketRegime.UNKNOWN
+            mid_bias = MarketBias.NEUTRAL
+
+        # Analyze higher timeframe (~15m)
+        high_c, high_h, high_l = self._resample(closes, highs, lows, self.high_factor)
+        if len(high_c) >= 20:
+            high_result = self.high_clf.classify(high_c, high_h, high_l)
+            higher_regime = high_result.regime
+            higher_bias = high_result.bias
+        else:
+            higher_regime = MarketRegime.UNKNOWN
+            higher_bias = MarketBias.NEUTRAL
+
+        # Check alignment
+        aligned = True
+        conflict = ""
+
+        # Primary vs higher TF: must not contradict
+        if primary_bias != MarketBias.NEUTRAL and higher_bias != MarketBias.NEUTRAL:
+            if primary_bias != higher_bias:
+                aligned = False
+                conflict = f"2m={primary_bias.value} vs 15m={higher_bias.value}"
+
+        # Primary vs mid TF: must not contradict
+        if primary_bias != MarketBias.NEUTRAL and mid_bias != MarketBias.NEUTRAL:
+            if primary_bias != mid_bias:
+                aligned = False
+                conflict = f"2m={primary_bias.value} vs 5m={mid_bias.value}"
 
         return MTFResult(
             primary_regime=primary_regime,
             primary_bias=primary_bias,
-            higher_regime=result.regime,
-            higher_bias=result.bias,
+            mid_regime=mid_regime,
+            mid_bias=mid_bias,
+            higher_regime=higher_regime,
+            higher_bias=higher_bias,
             aligned=aligned,
-            higher_tf_label=f"{factor}x",
+            conflict_reason=conflict,
         )
 
     def _resample(
         self, closes: FloatArray, highs: FloatArray, lows: FloatArray, factor: int
     ) -> tuple[FloatArray, FloatArray, FloatArray]:
-        """Resample OHLC to higher timeframe by grouping candles."""
         n = len(closes)
         n_bars = n // factor
 
         if n_bars < 2:
             return closes, highs, lows
 
-        # Trim to exact multiple
         trim = n_bars * factor
         c = closes[-trim:]
         h = highs[-trim:]

@@ -73,7 +73,11 @@ class RiskConfig:
     max_positions: int = 1  # one trade at a time for small account
     sl_pct: float = 0.30  # 30% of premium as SL
     target_multiplier: float = 2.0  # 1:2 R:R
-    max_premium_pct: float = 0.50  # up to 50% of account on one trade
+    max_premium_pct: float = 0.50
+
+    # Premium range for strike selection
+    min_premium: float = 50.0  # minimum ₹50
+    max_premium: float = 200.0  # maximum ₹200  # up to 50% of account on one trade
     # ₹15K × 50% = ₹7500 max premium
 
 
