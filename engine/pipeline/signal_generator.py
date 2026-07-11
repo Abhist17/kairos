@@ -1,16 +1,16 @@
 """
-Kairos Engine — Trade Signal Generator V2
+Kairos Engine — Signal Generator V3
 
-Filters from backtest analysis:
-1. Opening range exclusion (first 30 min)
-2. 10-minute cooldown between signals
-3. Regime whitelist (TREND_EXPANSION + COMPRESSION only)
-4. Multi-timeframe alignment
+All 9 filters applied AFTER state machine (covers both Path A and B):
+1. Opening range exclusion (45 min)
+2. 10-minute cooldown
+3. Regime whitelist
+4. MTF alignment
 5. Thesis separation >= 0.20
 6. IV overexpanded block
-7. Momentum confirmation (2 candles in direction)
+7. Momentum confirmation (2 candles)
 8. Move feasibility >= 1.0
-9. Minimum confidence >= 60%
+9. Confidence >= 60%
 """
 
 import numpy as np
@@ -19,10 +19,22 @@ from datetime import datetime
 from engine.pipeline.market_pipeline import MarketPipeline
 from engine.options.strike_selector import StrikeSelector, TradeSignal
 from engine.core.enums import EntryWindow, MarketBias, IVState
-from engine.core.config import TradeFilterConfig
+from engine.core.config import TradeFilterConfig, RiskConfig
 from engine.core.types import FloatArray
 from engine.features.multi_timeframe import MultiTimeframe
+from engine.features.volatility import atr
 from data.models.market_state import MarketState
+
+
+# Fix 4: ATR multiplier by regime
+ATR_MULTIPLIER = {
+    "TREND_EXPANSION": 2.0,
+    "COMPRESSION": 3.0,
+    "TREND_EXHAUSTION": 1.5,
+    "MEAN_REVERSION": 1.0,
+    "CHAOTIC": 1.5,
+    "UNKNOWN": 1.5,
+}
 
 
 class SignalGenerator:
@@ -30,13 +42,16 @@ class SignalGenerator:
         self,
         strike_step: float = 50.0,
         filters: TradeFilterConfig | None = None,
+        risk: RiskConfig | None = None,
     ):
         self.pipeline = MarketPipeline()
         self.selector = StrikeSelector(strike_step=strike_step)
         self.filters = filters or TradeFilterConfig()
-        self.mtf = MultiTimeframe(resample_factor=7)
+        self.risk = risk or RiskConfig()
+        self.mtf = MultiTimeframe(resample_factor=self.filters.mtf_resample_factor)
         self._last_signal_time: datetime | None = None
         self._rejection_reason: str = ""
+        self._open_positions: int = 0
 
     @property
     def min_candles(self) -> int:
@@ -60,135 +75,107 @@ class SignalGenerator:
     ) -> tuple[MarketState, TradeSignal | None]:
 
         state = self.pipeline.process(
-            closes,
-            highs,
-            lows,
-            opens,
-            volumes,
-            iv_series,
-            symbol,
-            timestamp,
+            closes, highs, lows, opens, volumes,
+            iv_series, symbol, timestamp,
         )
 
         signal = None
         self._rejection_reason = ""
 
         if state.entry_window == EntryWindow.OPEN:
-            signal = self._try_generate(
-                state,
-                closes,
-                highs,
-                lows,
-                timestamp or datetime.now(),
-                dte_minutes,
-                symbol,
+            signal = self._apply_filters(
+                state, closes, highs, lows,
+                timestamp or datetime.now(), dte_minutes, symbol,
             )
 
         return state, signal
 
-    def _try_generate(
-        self,
-        state: MarketState,
-        closes: FloatArray,
-        highs: FloatArray,
-        lows: FloatArray,
-        now: datetime,
-        dte_minutes: float,
-        symbol: str,
+    def _apply_filters(
+        self, state, closes, highs, lows, now, dte_minutes, symbol,
     ) -> TradeSignal | None:
         f = self.filters
 
-        # --- Filter 1: Opening range ---
-        market_open = now.replace(
-            hour=f.market_open_hour, minute=f.market_open_minute, second=0
-        )
-        minutes_since_open = (now - market_open).total_seconds() / 60
-
-        if 0 < minutes_since_open < f.opening_range_skip_minutes:
-            self._rejection_reason = (
-                f"Opening range: {minutes_since_open:.0f}m since open, "
-                f"need {f.opening_range_skip_minutes}m"
-            )
+        # --- F1: Opening range (45 min) ---
+        market_open = now.replace(hour=f.market_open_hour, minute=f.market_open_minute, second=0)
+        mins_open = (now - market_open).total_seconds() / 60
+        if 0 < mins_open < f.opening_range_skip_minutes:
+            self._rejection_reason = f"Opening range ({mins_open:.0f}m < {f.opening_range_skip_minutes}m)"
             return None
 
-        # --- Filter 2: Signal cooldown ---
+        # --- F2: Cooldown ---
         if self._last_signal_time:
             elapsed = (now - self._last_signal_time).total_seconds() / 60
             if elapsed < f.signal_cooldown_minutes:
-                self._rejection_reason = (
-                    f"Cooldown: {elapsed:.1f}m since last, "
-                    f"need {f.signal_cooldown_minutes}m"
-                )
+                self._rejection_reason = f"Cooldown ({elapsed:.1f}m < {f.signal_cooldown_minutes}m)"
                 return None
 
-        # --- Filter 3: Regime whitelist ---
+        # --- F3: Regime whitelist ---
         if state.regime not in f.allowed_regimes:
             self._rejection_reason = f"Regime {state.regime.value} not allowed"
             return None
 
-        # --- Filter 4: Multi-timeframe alignment ---
-        mtf = self.mtf.analyze(
-            closes,
-            highs,
-            lows,
-            state.regime,
-            state.thesis.primary_bias,
-        )
-        if not mtf.aligned:
-            self._rejection_reason = (
-                f"MTF conflict: {mtf.primary_bias.value} vs "
-                f"higher TF {mtf.higher_bias.value} ({mtf.higher_regime.value})"
-            )
-            return None
+        # --- F4: MTF alignment ---
+        if f.require_mtf_alignment:
+            mtf = self.mtf.analyze(closes, highs, lows, state.regime, state.thesis.primary_bias)
+            if not mtf.aligned:
+                self._rejection_reason = (
+                    f"MTF: {mtf.primary_bias.value} vs HTF {mtf.higher_bias.value}"
+                )
+                return None
 
-        # --- Filter 5: Thesis separation ---
+        # --- F5: Thesis separation ---
         if state.thesis.separation < f.min_thesis_separation:
-            self._rejection_reason = (
-                f"Separation {state.thesis.separation:.3f} < {f.min_thesis_separation}"
-            )
+            self._rejection_reason = f"Separation {state.thesis.separation:.3f} < {f.min_thesis_separation}"
             return None
 
-        # --- Filter 6: IV overexpanded block ---
+        # --- F6: IV block ---
         if f.block_overexpanded_iv and state.iv.state == IVState.OVEREXPANDED:
-            self._rejection_reason = "IV OVEREXPANDED — options too expensive"
+            self._rejection_reason = "IV OVEREXPANDED"
             return None
 
-        # --- Filter 7: Momentum confirmation ---
+        # --- F7: Momentum confirmation ---
         bias = state.thesis.primary_bias
         if bias == MarketBias.NEUTRAL:
             self._rejection_reason = "Neutral bias"
             return None
 
-        n_confirm = f.confirmation_candles
-        if len(closes) < n_confirm + 1:
-            self._rejection_reason = "Not enough candles for confirmation"
+        nc = f.confirmation_candles
+        if len(closes) < nc + 1:
+            self._rejection_reason = "Not enough candles"
             return None
 
-        recent_moves = np.diff(closes[-(n_confirm + 1) :])
+        recent = np.diff(closes[-(nc + 1):])
         if bias == MarketBias.BULLISH:
-            confirmed = all(m > 0 for m in recent_moves)
+            confirmed = all(m > 0 for m in recent)
         else:
-            confirmed = all(m < 0 for m in recent_moves)
+            confirmed = all(m < 0 for m in recent)
 
         if not confirmed:
-            self._rejection_reason = (
-                f"No momentum: last {n_confirm} candles not all {bias.value}"
-            )
+            self._rejection_reason = f"Momentum not confirmed ({nc} candles)"
             return None
 
-        # --- All filters passed → select strike ---
-        if len(closes) > 20:
-            expected_move = float(np.std(np.diff(closes[-20:]))) * 3.0
+        # --- F10: Max positions ---
+        if self._open_positions >= self.risk.max_positions:
+            self._rejection_reason = f"Max positions ({self.risk.max_positions})"
+            return None
+
+        # --- Generate strike ---
+        # Fix 4: ATR-based expected move
+        true_ranges = atr(highs, lows, closes)
+        if len(true_ranges) >= 14:
+            current_atr = float(np.mean(true_ranges[-14:]))
+            multiplier = ATR_MULTIPLIER.get(state.regime.value, 1.5)
+            expected_move = current_atr * multiplier
         else:
             expected_move = 30.0
 
-        iv = state.iv.current_iv if state.iv.current_iv > 0 else 0.15
+        iv_val = state.iv.current_iv if state.iv.current_iv > 0 else 0.15
 
         signal = self.selector.select(
             spot=state.last_price,
             bias=bias,
             expected_move=expected_move,
-            iv=iv,
+            iv=iv_val,
             dte_minutes=dte_minutes,
             regime_confidence=state.regime_metrics.regime_confidence,
             thesis_separation=state.thesis.separation,
@@ -196,21 +183,26 @@ class SignalGenerator:
         )
 
         if not signal:
-            self._rejection_reason = "No suitable strike found"
+            self._rejection_reason = "No suitable strike"
             return None
 
-        # --- Filter 8: Move feasibility floor ---
+        # --- F8: Feasibility floor ---
         if signal.all_candidates:
-            best = signal.all_candidates[0]
-            if best.move_feasibility < f.min_move_feasibility:
-                self._rejection_reason = f"Feasibility {best.move_feasibility:.2f} < {f.min_move_feasibility}"
+            if signal.all_candidates[0].move_feasibility < f.min_move_feasibility:
+                self._rejection_reason = (
+                    f"Feasibility {signal.all_candidates[0].move_feasibility:.2f} < {f.min_move_feasibility}"
+                )
                 return None
 
-        # --- Filter 9: Minimum confidence ---
+        # --- F9: Confidence ---
         if signal.confidence < f.min_signal_confidence:
-            self._rejection_reason = (
-                f"Confidence {signal.confidence:.0%} < {f.min_signal_confidence:.0%}"
-            )
+            self._rejection_reason = f"Confidence {signal.confidence:.0%} < {f.min_signal_confidence:.0%}"
+            return None
+
+        # --- Fix 6: Position sizing ---
+        max_premium = self.risk.account_size * self.risk.max_premium_pct
+        if signal.estimated_premium > max_premium:
+            self._rejection_reason = f"Premium ₹{signal.estimated_premium:.0f} > max ₹{max_premium:.0f}"
             return None
 
         self._last_signal_time = now
@@ -221,17 +213,11 @@ def format_signal(signal: TradeSignal) -> str:
     if signal is None:
         return ""
 
-    GRN = "\033[92m"
-    RED = "\033[91m"
-    YEL = "\033[93m"
-    B = "\033[1m"
-    R = "\033[0m"
-    MAG = "\033[95m"
+    GRN = "\033[92m"; RED = "\033[91m"; YEL = "\033[93m"
+    B = "\033[1m"; R = "\033[0m"; MAG = "\033[95m"
 
     side_color = GRN if signal.option_type == "CE" else RED
-    conf_color = (
-        GRN if signal.confidence > 0.6 else (YEL if signal.confidence > 0.4 else RED)
-    )
+    conf_color = GRN if signal.confidence > 0.6 else (YEL if signal.confidence > 0.4 else RED)
 
     lines = [
         "",
@@ -260,11 +246,11 @@ def format_signal(signal: TradeSignal) -> str:
         f"{'':>{60 - len(signal.reason)}}"
         f"{side_color}║{R}",
         f"  {B}{side_color}╚══════════════════════════════════════════════════════════════╝{R}",
-        f"  {MAG}Alternative strikes:{R}",
+        f"  {MAG}Alternatives:{R}",
     ]
 
     for c in signal.all_candidates[:3]:
-        flag = " ◀ SELECTED" if c.strike == signal.strike else ""
+        flag = " ◀" if c.strike == signal.strike else ""
         lines.append(
             f"    {c.strike:.0f} {c.option_type} {c.moneyness:<5s}"
             f"  ₹{c.estimated_premium:>7.2f}"
@@ -272,8 +258,7 @@ def format_signal(signal: TradeSignal) -> str:
             f"  feas={c.move_feasibility:.2f}"
             f"  γ/θ={c.gamma_theta_ratio:.1f}"
             f"  surv={c.theta_survival_minutes:.0f}m"
-            f"  score={c.score:.3f}"
-            f"{flag}"
+            f"  score={c.score:.3f}{flag}"
         )
 
     lines.append("")
