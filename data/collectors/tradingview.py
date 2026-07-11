@@ -1,4 +1,3 @@
-
 import os
 import json
 import requests
@@ -92,7 +91,7 @@ class TradingViewAlert:
                 headers={"Content-Type": "application/json"},
             )
             if r.status_code == 200:
-                print(f"  [TradingView] Alert sent ✓")
+                print("  [TradingView] Alert sent ✓")
                 return True
             else:
                 print(f"  [TradingView] Webhook {r.status_code}")
@@ -114,7 +113,7 @@ class TradingViewAlert:
         """
         asset = get_asset(symbol)
 
-        script = f'''
+        script = f"""
 //@version=5
 indicator("Kairos Engine Signals", overlay=true)
 
@@ -177,7 +176,7 @@ if signal_active
     table.cell(info, 1, 2, str.tostring(signal_sl, "#.##"))
     table.cell(info, 0, 3, "Target Premium")
     table.cell(info, 1, 3, str.tostring(signal_target, "#.##"))
-'''
+"""
         return script
 
 
@@ -194,22 +193,24 @@ class TVSignalLogger:
 
     def add(self, signal: TradeSignal, state: MarketState):
         asset = get_asset(signal.symbol)
-        self.signals.append({
-            "time": datetime.now().isoformat(),
-            "symbol": signal.symbol,
-            "tv_ticker": asset.tv_ticker,
-            "type": signal.option_type,
-            "strike": signal.strike,
-            "spot": signal.spot,
-            "premium": signal.estimated_premium,
-            "sl": signal.stoploss_premium,
-            "target": signal.target_premium,
-            "rr": signal.risk_reward,
-            "confidence": signal.confidence,
-            "regime": state.regime.value,
-            "bias": state.thesis.primary_bias.value,
-            "separation": state.thesis.separation,
-        })
+        self.signals.append(
+            {
+                "time": datetime.now().isoformat(),
+                "symbol": signal.symbol,
+                "tv_ticker": asset.tv_ticker,
+                "type": signal.option_type,
+                "strike": signal.strike,
+                "spot": signal.spot,
+                "premium": signal.estimated_premium,
+                "sl": signal.stoploss_premium,
+                "target": signal.target_premium,
+                "rr": signal.risk_reward,
+                "confidence": signal.confidence,
+                "regime": state.regime.value,
+                "bias": state.thesis.primary_bias.value,
+                "separation": state.thesis.separation,
+            }
+        )
         self._save()
 
     def _save(self):
