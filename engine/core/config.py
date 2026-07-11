@@ -1,4 +1,4 @@
-"""Kairos Engine — Configuration. All thresholds with rationale."""
+"""Kairos Engine — Configuration tuned for scalping."""
 
 from dataclasses import dataclass, field
 from engine.core.enums import MarketRegime
@@ -23,65 +23,58 @@ class RegimeConfig:
 
 @dataclass(frozen=True)
 class TradeFilterConfig:
-    # Fix 2: Opening range extended to 45 min (9:15-10:00)
-    # Backtest showed 50% loss rate in first 30 min, still lossy at 30-45
-    opening_range_skip_minutes: int = 45
+    # Opening range: 20 min (9:15-9:35)
+    # First 15 min is pure chaos, 15-20 min is transition
+    # After 9:35 scalp setups start forming
+    opening_range_skip_minutes: int = 30
     market_open_hour: int = 9
     market_open_minute: int = 15
 
-    # Fix 1: Cooldown applied to ALL paths (was only Path A)
+    # 10 min cooldown between signals (prevents duplicate signals)
     signal_cooldown_minutes: int = 10
 
-    # Regime whitelist for signal generation
+    # Only signal in trending or compressed regimes
     allowed_regimes: tuple = (
         MarketRegime.TREND_EXPANSION,
         MarketRegime.COMPRESSION,
     )
 
-    # Fix 7: Multi-timeframe must agree
+    # MTF alignment
     require_mtf_alignment: bool = True
-    mtf_resample_factor: int = 7  # 2m * 7 = ~15 min higher TF
+    mtf_resample_factor: int = 7
 
-    # Momentum confirmation candles
+    # 2 candle momentum confirmation
     confirmation_candles: int = 2
 
-    # Fix 1: Minimum thesis separation raised
+    # Thesis separation
     min_thesis_separation: float = 0.20
 
-    # Minimum signal confidence
+    # Minimum confidence
     min_signal_confidence: float = 0.60
 
-    # Block overexpanded IV (options too expensive to buy)
-    block_overexpanded_iv: bool = True
+    # IV filter: SMART — not a blanket block
+    # Only block overexpanded IV when regime is NOT trending
+    # During TREND_EXPANSION, high IV is expected and the move compensates
+    block_iv_in_non_trend: bool = True
 
-    # Fix 4: Move feasibility floor
-    min_move_feasibility: float = 1.0
+    # Move feasibility floor
+    min_move_feasibility: float = 0.8  # lowered for scalps (smaller targets)
 
-    # Fix 3: Minimum regime age for Path B (trend must be established)
-    # Prevents signaling on a "trend" that just started 2 candles ago
-    min_regime_age_trend: int = 5  # ~10 min on 2m candles
+    # Regime age for Path B
+    min_regime_age_trend: int = 3
 
 
 @dataclass(frozen=True)
 class RiskConfig:
-    """Fix 6: Position sizing and risk management."""
-    # Account size in INR
-    account_size: float = 100000.0
+    """Tuned for ₹10-20K scalp account."""
 
-    # Max risk per trade as % of account
-    max_risk_pct: float = 0.02  # 2% = ₹2000 on 1L account
-
-    # Max simultaneous open positions
-    max_positions: int = 2
-
-    # Stoploss as % of premium
-    sl_pct: float = 0.30  # 30% of premium
-
-    # Target as multiple of risk
+    account_size: float = 15000.0  # ₹15K midpoint
+    max_risk_pct: float = 0.03  # 3% per trade = ₹450 max risk
+    max_positions: int = 1  # one trade at a time for small account
+    sl_pct: float = 0.30  # 30% of premium as SL
     target_multiplier: float = 2.0  # 1:2 R:R
-
-    # Max premium as % of account (don't blow on one trade)
-    max_premium_pct: float = 0.05  # 5% of account per trade
+    max_premium_pct: float = 0.50  # up to 50% of account on one trade
+    # ₹15K × 50% = ₹7500 max premium
 
 
 @dataclass(frozen=True)

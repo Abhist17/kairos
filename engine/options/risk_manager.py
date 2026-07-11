@@ -41,8 +41,13 @@ class RiskManager:
         risk_per_unit = premium - sl_premium
         if risk_per_unit <= 0:
             return PositionSize(
-                lots=0, quantity=0, risk_per_lot=0, total_risk=0,
-                total_premium=0, risk_pct=0, approved=False,
+                lots=0,
+                quantity=0,
+                risk_per_lot=0,
+                total_risk=0,
+                total_premium=0,
+                risk_pct=0,
+                approved=False,
                 reason="SL >= premium (invalid)",
             )
 
@@ -52,7 +57,9 @@ class RiskManager:
 
         max_capital = cfg.account_size * cfg.max_premium_pct
         premium_per_lot = premium * lot_size
-        max_lots_by_capital = int(max_capital / premium_per_lot) if premium_per_lot > 0 else 0
+        max_lots_by_capital = (
+            int(max_capital / premium_per_lot) if premium_per_lot > 0 else 0
+        )
 
         lots = max(1, min(max_lots_by_risk, max_lots_by_capital))
         quantity = lots * lot_size

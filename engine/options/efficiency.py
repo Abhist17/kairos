@@ -33,7 +33,7 @@ class OptionEfficiencyEngine:
         self,
         min_gamma_theta: float = 0.5,
         min_move_feasibility: float = 0.8,
-        min_theta_survival: float = 10.0,  # minutes
+        min_theta_survival: float = 5.0,  # minutes
         min_delta_accel: float = 0.1,
     ):
         self.min_gamma_theta = min_gamma_theta

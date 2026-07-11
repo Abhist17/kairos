@@ -62,7 +62,7 @@ class StrikeSelector:
         n_candidates: int = 5,  # check 5 strikes each side
         risk_pct: float = 0.30,  # SL at 30% of premium
         target_multiplier: float = 2.0,  # target = 2x risk
-        min_survival: float = 8.0,  # minimum 8 minutes survival
+        min_survival: float = 5.0,  # minimum 8 minutes survival
     ):
         self.strike_step = strike_step
         self.n_candidates = n_candidates

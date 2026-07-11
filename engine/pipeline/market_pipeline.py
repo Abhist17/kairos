@@ -16,19 +16,26 @@ from engine.state_machine.machine import EntryStateMachine
 from engine.features.multi_timeframe import MultiTimeframe
 from engine.features.volatility import atr
 from data.models.market_state import (
-    MarketState, RegimeMetrics, CompressionMetrics, StructureMetrics,
-    IVMetrics, OptionMetrics, FlowMetrics, ThesisMetrics,
-    StateMachineMetrics, GateInfo,
+    MarketState,
+    RegimeMetrics,
+    CompressionMetrics,
+    StructureMetrics,
+    IVMetrics,
+    OptionMetrics,
+    FlowMetrics,
+    ThesisMetrics,
+    StateMachineMetrics,
+    GateInfo,
 )
 
 
 # Fix 4: ATR multiplier by regime
 ATR_MULTIPLIER = {
-    "TREND_EXPANSION": 2.0,   # moves are extended
-    "COMPRESSION": 3.0,       # breakouts are explosive
+    "TREND_EXPANSION": 2.0,  # moves are extended
+    "COMPRESSION": 3.0,  # breakouts are explosive
     "TREND_EXHAUSTION": 1.5,  # moves are fading
-    "MEAN_REVERSION": 1.0,    # moves are limited
-    "CHAOTIC": 1.5,           # unpredictable
+    "MEAN_REVERSION": 1.0,  # moves are limited
+    "CHAOTIC": 1.5,  # unpredictable
     "UNKNOWN": 1.5,
 }
 
@@ -67,10 +74,12 @@ class MarketPipeline:
 
         if iv_series is None:
             rets = np.diff(np.log(closes)) if n > 1 else np.array([0.0])
-            rolling = np.array([
-                np.std(rets[max(0, i - 20):i], ddof=1) if i > 1 else 0.01
-                for i in range(1, len(rets) + 1)
-            ])
+            rolling = np.array(
+                [
+                    np.std(rets[max(0, i - 20) : i], ddof=1) if i > 1 else 0.01
+                    for i in range(1, len(rets) + 1)
+                ]
+            )
             iv_series = rolling * np.sqrt(93750)
 
         # 1. Regime
@@ -105,9 +114,14 @@ class MarketPipeline:
         req_move = abs(price - strike) + 5.0
 
         opt = self.opt_eng.evaluate(
-            spot=price, strike=strike, delta=syn_delta,
-            gamma=syn_gamma, theta=syn_theta, vega=syn_vega,
-            expected_move=expected_move, required_move=req_move,
+            spot=price,
+            strike=strike,
+            delta=syn_delta,
+            gamma=syn_gamma,
+            theta=syn_theta,
+            vega=syn_vega,
+            expected_move=expected_move,
+            required_move=req_move,
             dte_minutes=dte_min,
         )
 
@@ -117,7 +131,8 @@ class MarketPipeline:
 
         # 7. Thesis
         thesis = self.thesis_eng.score(
-            regime=reg.regime, bias=reg.bias,
+            regime=reg.regime,
+            bias=reg.bias,
             regime_confidence=reg.confidence,
             compression_score=comp.compression_score,
             is_compressed=comp.is_compressed,
@@ -131,7 +146,11 @@ class MarketPipeline:
 
         # Fix 5/7: Multi-timeframe alignment
         mtf_result = self.mtf.analyze(
-            closes, highs, lows, reg.regime, reg.bias,
+            closes,
+            highs,
+            lows,
+            reg.regime,
+            reg.bias,
         )
 
         # 8. State machine with regime_age + MTF
@@ -154,11 +173,16 @@ class MarketPipeline:
         )
 
         return MarketState(
-            symbol=symbol, timestamp=ts, last_price=price,
-            candle_close=price, candle_high=float(highs[-1]),
-            candle_low=float(lows[-1]), candle_open=float(opens[-1]),
+            symbol=symbol,
+            timestamp=ts,
+            last_price=price,
+            candle_close=price,
+            candle_high=float(highs[-1]),
+            candle_low=float(lows[-1]),
+            candle_open=float(opens[-1]),
             candle_volume=float(volumes[-1]),
-            regime=reg.regime, bias=reg.bias,
+            regime=reg.regime,
+            bias=reg.bias,
             regime_metrics=RegimeMetrics(
                 efficiency_ratio=reg.efficiency_ratio,
                 directional_persistence=reg.directional_persistence,
@@ -177,7 +201,8 @@ class MarketPipeline:
                 compression_score=comp.compression_score,
                 atr_contraction=comp.atr_contraction,
                 range_contraction=comp.range_contraction,
-                rv_decay=comp.rv_decay, bbw_percentile=comp.bbw_percentile,
+                rv_decay=comp.rv_decay,
+                bbw_percentile=comp.bbw_percentile,
                 compression_velocity=comp.compression_velocity,
                 compression_half_life=comp.compression_half_life,
                 candles_compressed=comp.candles_compressed,
@@ -187,15 +212,23 @@ class MarketPipeline:
                 structure_score=struct.structure_score,
                 nearest_zone_distance=struct.nearest_zone_distance,
                 nearest_zone_distance_pct=struct.nearest_zone_distance_pct,
-                nearest_zone_center=struct.nearest_zone.center if struct.nearest_zone else 0,
-                nearest_zone_confluence=struct.nearest_zone.confluence if struct.nearest_zone else 0,
-                above_zones=struct.above_zones, below_zones=struct.below_zones,
+                nearest_zone_center=struct.nearest_zone.center
+                if struct.nearest_zone
+                else 0,
+                nearest_zone_confluence=struct.nearest_zone.confluence
+                if struct.nearest_zone
+                else 0,
+                above_zones=struct.above_zones,
+                below_zones=struct.below_zones,
                 inside_zone=struct.inside_zone,
-                total_levels=len(struct.levels), total_zones=len(struct.zones),
+                total_levels=len(struct.levels),
+                total_zones=len(struct.zones),
             ),
             iv=IVMetrics(
-                state=iv.state, current_iv=iv.current_iv,
-                iv_percentile=iv.iv_percentile, iv_velocity=iv.iv_velocity,
+                state=iv.state,
+                current_iv=iv.current_iv,
+                iv_percentile=iv.iv_percentile,
+                iv_velocity=iv.iv_velocity,
             ),
             option=OptionMetrics(
                 is_efficient=opt.is_efficient,
@@ -203,8 +236,10 @@ class MarketPipeline:
                 gamma_theta_ratio=opt.gamma_theta_ratio,
                 theta_survival_minutes=opt.theta_survival_minutes,
                 move_feasibility=opt.move_feasibility,
-                strike=opt.strike, delta=opt.delta,
-                gamma=opt.gamma, theta=opt.theta,
+                strike=opt.strike,
+                delta=opt.delta,
+                gamma=opt.gamma,
+                theta=opt.theta,
             ),
             flow=FlowMetrics(
                 pressure_score=flow.pressure_score,
@@ -223,9 +258,13 @@ class MarketPipeline:
                 thesis_valid=thesis.thesis_valid,
             ),
             state_machine=StateMachineMetrics(
-                gates=[GateInfo(name=g.name, ready=g.ready, reason=g.reason) for g in sm.gates],
+                gates=[
+                    GateInfo(name=g.name, ready=g.ready, reason=g.reason)
+                    for g in sm.gates
+                ],
                 estimated_window_seconds=sm.estimated_window_seconds,
                 thesis_survival_minutes=sm.thesis_survival_minutes,
             ),
-            trade_state=sm.state, entry_window=sm.entry_window,
+            trade_state=sm.state,
+            entry_window=sm.entry_window,
         )

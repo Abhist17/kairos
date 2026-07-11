@@ -30,8 +30,8 @@ class EntryStateMachine:
         # Path B
         trend_min_confidence: float = 0.60,
         trend_min_separation: float = 0.25,
-        trend_min_er: float = 0.70,
-        trend_min_regime_age: int = 5,
+        trend_min_er: float = 0.55,
+        trend_min_regime_age: int = 3,
         trend_regimes: tuple = (MarketRegime.TREND_EXPANSION,),
     ):
         self.structure_min = structure_min
@@ -67,9 +67,15 @@ class EntryStateMachine:
     ) -> StateMachineResult:
 
         path_b = self._evaluate_path_b(
-            regime, bias, regime_confidence, efficiency_ratio,
-            regime_age, mtf_aligned,
-            option_efficient, theta_survival, thesis_valid,
+            regime,
+            bias,
+            regime_confidence,
+            efficiency_ratio,
+            regime_age,
+            mtf_aligned,
+            option_efficient,
+            theta_survival,
+            thesis_valid,
             thesis_separation,
         )
 
@@ -77,16 +83,30 @@ class EntryStateMachine:
             return path_b
 
         return self._evaluate_path_a(
-            regime, structure_score, nearest_zone_dist_pct,
-            compression_score, is_compressed, pressure_score,
-            option_efficient, theta_survival, thesis_valid,
+            regime,
+            structure_score,
+            nearest_zone_dist_pct,
+            compression_score,
+            is_compressed,
+            pressure_score,
+            option_efficient,
+            theta_survival,
+            thesis_valid,
             thesis_separation,
         )
 
     def _evaluate_path_b(
-        self, regime, bias, regime_confidence, efficiency_ratio,
-        regime_age, mtf_aligned,
-        option_efficient, theta_survival, thesis_valid, thesis_separation,
+        self,
+        regime,
+        bias,
+        regime_confidence,
+        efficiency_ratio,
+        regime_age,
+        mtf_aligned,
+        option_efficient,
+        theta_survival,
+        thesis_valid,
+        thesis_separation,
     ) -> StateMachineResult:
         gates: list[GateStatus] = []
         current_state = TradeState.NO_SETUP
@@ -131,7 +151,9 @@ class EntryStateMachine:
         reason = ""
         if not thesis_ok:
             reason = f"sep {thesis_separation:.3f} < {self.trend_min_separation}"
-        gates.append(GateStatus("THESIS_STRONG", thesis_ok and dir_ok and trend_ok, reason))
+        gates.append(
+            GateStatus("THESIS_STRONG", thesis_ok and dir_ok and trend_ok, reason)
+        )
 
         if trend_ok and dir_ok and thesis_ok:
             current_state = TradeState.PRESSURE_BUILDING
@@ -152,7 +174,9 @@ class EntryStateMachine:
         if all_ready:
             current_state = TradeState.ENTRY_WINDOW_OPEN
 
-        gates.append(GateStatus("FLOW_CONF", all_ready, "" if all_ready else "path B: N/A"))
+        gates.append(
+            GateStatus("FLOW_CONF", all_ready, "" if all_ready else "path B: N/A")
+        )
         gates.append(GateStatus("ENTRY", all_ready, "" if all_ready else "waiting"))
 
         window_secs = int(45 + regime_confidence * 75) if all_ready else 0
@@ -166,9 +190,17 @@ class EntryStateMachine:
         )
 
     def _evaluate_path_a(
-        self, regime, structure_score, nearest_zone_dist_pct,
-        compression_score, is_compressed, pressure_score,
-        option_efficient, theta_survival, thesis_valid, thesis_separation,
+        self,
+        regime,
+        structure_score,
+        nearest_zone_dist_pct,
+        compression_score,
+        is_compressed,
+        pressure_score,
+        option_efficient,
+        theta_survival,
+        thesis_valid,
+        thesis_separation,
     ) -> StateMachineResult:
         gates: list[GateStatus] = []
         current_state = TradeState.NO_SETUP
@@ -188,7 +220,8 @@ class EntryStateMachine:
             current_state = TradeState.STRUCTURAL_INTEREST
 
         comp_ok = (
-            is_compressed or compression_score >= self.compression_min
+            is_compressed
+            or compression_score >= self.compression_min
             or regime in self.favorable_regimes
         )
         reason = "" if comp_ok else f"no comp, regime={regime.value}"
@@ -225,7 +258,9 @@ class EntryStateMachine:
         window_secs = int(45 + compression_score * 75) if all_ready else 0
 
         return StateMachineResult(
-            state=current_state, entry_window=entry_window, gates=gates,
+            state=current_state,
+            entry_window=entry_window,
+            gates=gates,
             estimated_window_seconds=window_secs,
             thesis_survival_minutes=round(min(theta_survival, 9999), 1),
         )
