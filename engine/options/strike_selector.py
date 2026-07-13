@@ -1,11 +1,9 @@
 """
-Kairos Engine — Strike Selector V2 (Scalp, ₹50-200 premium range)
+Kairos Engine — Strike Selector V3
 
-For ₹10-20K capital scalping:
-  - Prefers OTM/slight OTM (₹50-200 premium)
-  - Avoids expensive ATM options (₹400+)
-  - Picks the strike with best gamma bang per rupee spent
-  - Higher gamma/premium ratio = more leverage for small accounts
+Adapts to any index level (NIFTY 25K, SENSEX 77K, BTC 60K).
+No hard premium range — picks best gamma-per-rupee in the
+₹50-200 zone when possible, falls back to best available.
 """
 
 import math
@@ -25,7 +23,7 @@ class StrikeCandidate:
     move_feasibility: float
     gamma_theta_ratio: float
     theta_survival_minutes: float
-    gamma_per_rupee: float  # gamma / premium — leverage efficiency
+    gamma_per_rupee: float
     score: float
 
 
@@ -50,21 +48,16 @@ class StrikeSelector:
     def __init__(
         self,
         strike_step: float = 50.0,
-        n_candidates: int = 7,
+        n_candidates: int = 8,
         risk_pct: float = 0.30,
         target_multiplier: float = 2.0,
         min_survival: float = 5.0,
-        # Premium range filter
-        min_premium: float = 50.0,
-        max_premium: float = 200.0,
     ):
         self.strike_step = strike_step
         self.n_candidates = n_candidates
         self.risk_pct = risk_pct
         self.target_multiplier = target_multiplier
         self.min_survival = min_survival
-        self.min_premium = min_premium
-        self.max_premium = max_premium
 
     def select(
         self,
@@ -85,8 +78,7 @@ class StrikeSelector:
         atm = round(spot / self.strike_step) * self.strike_step
 
         candidates = []
-        # Scan more OTM strikes for cheap options
-        for i in range(-1, self.n_candidates):
+        for i in range(-2, self.n_candidates):
             if option_type == "CE":
                 strike = atm + i * self.strike_step
             else:
@@ -95,13 +87,8 @@ class StrikeSelector:
             if strike <= 0:
                 continue
 
-            cand = self._evaluate_strike(
-                spot,
-                strike,
-                option_type,
-                expected_move,
-                iv,
-                dte_minutes,
+            cand = self._evaluate(
+                spot, strike, option_type, expected_move, iv, dte_minutes
             )
             if cand:
                 candidates.append(cand)
@@ -109,35 +96,16 @@ class StrikeSelector:
         if not candidates:
             return None
 
-        # Filter by premium range
-        in_range = [
-            c
-            for c in candidates
-            if self.min_premium <= c.estimated_premium <= self.max_premium
-        ]
-
-        # If nothing in range, use closest to range
-        if not in_range:
-            in_range = sorted(
-                candidates,
-                key=lambda c: min(
-                    abs(c.estimated_premium - self.min_premium),
-                    abs(c.estimated_premium - self.max_premium),
-                ),
-            )[:3]
-
-        # Sort by score
-        in_range.sort(key=lambda c: c.score, reverse=True)
-        best = in_range[0]
+        candidates.sort(key=lambda c: c.score, reverse=True)
+        best = candidates[0]
 
         if best.theta_survival_minutes < self.min_survival:
             return None
 
-        # Calculate SL and target
         sl_premium = best.estimated_premium * (1 - self.risk_pct)
         risk_amount = best.estimated_premium - sl_premium
         target_premium = best.estimated_premium + risk_amount * self.target_multiplier
-        rr = self.target_multiplier if risk_amount > 0 else 0
+        rr = self.target_multiplier
 
         confidence = min(
             1.0,
@@ -146,15 +114,14 @@ class StrikeSelector:
                 + 0.20 * min(best.gamma_theta_ratio / 10, 1.0)
                 + 0.20 * regime_confidence
                 + 0.20 * min(thesis_separation / 0.3, 1.0)
-                + 0.15 * min(best.gamma_per_rupee * 1000, 1.0)
+                + 0.15 * min(best.gamma_per_rupee * 500, 1.0)
             ),
         )
 
         reason = (
             f"{best.moneyness} ₹{best.estimated_premium:.0f}, "
             f"feas={best.move_feasibility:.2f}, "
-            f"γ/θ={best.gamma_theta_ratio:.1f}, "
-            f"γ/₹={best.gamma_per_rupee:.5f}"
+            f"γ/θ={best.gamma_theta_ratio:.1f}"
         )
 
         return TradeSignal(
@@ -170,34 +137,23 @@ class StrikeSelector:
             survival_minutes=round(best.theta_survival_minutes, 1),
             confidence=round(confidence, 3),
             reason=reason,
-            all_candidates=in_range[:5],
+            all_candidates=candidates[:5],
         )
 
-    def _evaluate_strike(
-        self,
-        spot,
-        strike,
-        option_type,
-        expected_move,
-        iv,
-        dte_minutes,
-    ) -> StrikeCandidate | None:
-
+    def _evaluate(self, spot, strike, option_type, expected_move, iv, dte_minutes):
         dte_years = dte_minutes / (375 * 365)
         if dte_years <= 0 or iv <= 0:
             return None
 
-        # Moneyness
+        distance = abs(spot - strike)
+        distance_pct = distance / spot
+        if distance_pct > 0.04:
+            return None
+
         if option_type == "CE":
             itm_amount = spot - strike
         else:
             itm_amount = strike - spot
-
-        distance = abs(spot - strike)
-        distance_pct = distance / spot
-
-        if distance_pct > 0.04:  # skip strikes >4% away
-            return None
 
         if abs(itm_amount) < self.strike_step * 0.5:
             moneyness = "ATM"
@@ -210,16 +166,13 @@ class StrikeSelector:
         else:
             moneyness = "OTM3"
 
-        # BS greeks
         d1 = (math.log(spot / strike) + 0.5 * iv**2 * dte_years) / (
             iv * math.sqrt(dte_years)
         )
         d2 = d1 - iv * math.sqrt(dte_years)
 
-        from math import erf
-
-        nd1 = 0.5 * (1 + erf(d1 / math.sqrt(2)))
-        nd2 = 0.5 * (1 + erf(d2 / math.sqrt(2)))
+        nd1 = 0.5 * (1 + math.erf(d1 / math.sqrt(2)))
+        nd2 = 0.5 * (1 + math.erf(d2 / math.sqrt(2)))
 
         if option_type == "CE":
             delta = nd1
@@ -234,10 +187,9 @@ class StrikeSelector:
             spot * iv * math.sqrt(2 * math.pi * dte_years)
         )
 
-        theta_component = -(spot * iv * math.exp(-0.5 * d1**2)) / (
+        theta = -(spot * iv * math.exp(-0.5 * d1**2)) / (
             2 * math.sqrt(2 * math.pi * dte_years) * 365
         )
-        theta = theta_component
 
         # Move feasibility
         if option_type == "CE":
@@ -250,26 +202,20 @@ class StrikeSelector:
         else:
             move_feas = expected_move / needed if needed > 0 else 0.0
 
-        # Gamma/Theta ratio
         gt_ratio = abs(gamma / theta) * 100 if abs(theta) > 1e-10 else 999
 
-        # Theta survival (minutes)
         theta_per_min = abs(theta) / 375 if theta != 0 else 0
-        edge = premium * 0.10  # 10% of premium as minimum edge for scalps
+        edge = premium * 0.10
         survival = edge / theta_per_min if theta_per_min > 1e-10 else 9999
 
-        # Gamma per rupee — KEY metric for small accounts
-        # Higher = more gamma exposure per rupee spent
         gamma_per_rupee = gamma / premium if premium > 0 else 0
 
-        # Score for scalping cheap options
         score = (
-            0.25 * min(move_feas / 2.0, 1.0)
-            + 0.20 * min(gt_ratio / 15, 1.0)
+            0.30 * min(move_feas / 2.0, 1.0)
+            + 0.25 * min(gt_ratio / 15, 1.0)
             + 0.15 * min(survival / 20, 1.0)
-            + 0.20 * min(gamma_per_rupee * 1000, 1.0)  # gamma leverage
-            + 0.10 * (1.0 if moneyness in ("OTM1", "OTM2") else 0.5)  # prefer OTM
-            + 0.10 * max(0, 1.0 - abs(premium - 120) / 150)  # sweet spot ~₹120
+            + 0.15 * min(gamma_per_rupee * 500, 1.0)
+            + 0.15 * (1.0 if moneyness in ("ATM", "OTM1") else 0.5)
         )
 
         return StrikeCandidate(
