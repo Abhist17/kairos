@@ -32,6 +32,7 @@ from engine.options.strike_selector import StrikeSelector, TradeSignal
 from engine.core.enums import EntryWindow, MarketBias, MarketRegime
 from engine.core.types import FloatArray
 from engine.features.volatility import atr
+from engine.features.news_sentiment import NewsSentimentAnalyzer
 from data.models.market_state import MarketState
 
 
@@ -54,6 +55,7 @@ class SignalGenerator:
         self._signal_count_today: int = 0
         self._current_date: str = ""
         self._daily_pnl: float = 0.0
+        self.news = NewsSentimentAnalyzer(cache_minutes=5)
 
     @property
     def min_candles(self) -> int:
@@ -128,14 +130,14 @@ class SignalGenerator:
         # Opening range: first 30 min is chaos
         market_open = now.replace(hour=9, minute=15, second=0)
         mins_open = (now - market_open).total_seconds() / 60
-        if 0 < mins_open < 30:
+        if 0 < mins_open < 15:
             self._rejection_reason = f"Opening range ({mins_open:.0f}m)"
             return None
 
         # Cooldown: 20 min between signals
         if self._last_signal_time:
             elapsed = (now - self._last_signal_time).total_seconds() / 60
-            if elapsed < 20:
+            if elapsed < 10:
                 self._rejection_reason = f"Cooldown ({elapsed:.0f}m)"
                 return None
 
@@ -154,6 +156,27 @@ class SignalGenerator:
         if bias == MarketBias.NEUTRAL:
             self._rejection_reason = "Neutral bias"
             return None
+
+        # === ACTIVE DAY CHECK ===
+        # Skip quiet days. Only signal when NIFTY moved 50+ pts today.
+        candles_today = max(1, int(mins_open / 2))  # 2m candles
+        start = max(0, len(closes) - candles_today)
+        day_high = float(np.max(closes[start:]))
+        day_low = float(np.min(closes[start:]))
+        day_range = day_high - day_low
+        if day_range < 50:
+            self._rejection_reason = f"Quiet day ({day_range:.0f} < 50 pts)"
+            return None
+
+        # === BIG CANDLE CHECK ===
+        # Only signal when current candles are moving MORE than normal
+        # This is the key filter: big candles = real move, small = noise
+        if len(closes) > 20:
+            recent_candle_size = abs(float(closes[-1]) - float(closes[-2]))
+            avg_candle_size = float(np.mean(np.abs(np.diff(closes[-20:]))))
+            if avg_candle_size > 0 and recent_candle_size < avg_candle_size * 1.2:
+                self._rejection_reason = f"Small candle ({recent_candle_size:.1f} < {avg_candle_size * 1.2:.1f} avg)"
+                return None
 
         # === SCORE-BASED EVALUATION ===
         score = 0.0
@@ -213,7 +236,31 @@ class SignalGenerator:
         score += time_pts
         score_details.append(f"time={time_pts}")
 
-        # 6. Option efficiency (0-10)
+        # 6. News sentiment (0-10)
+        try:
+            news = self.news.analyze()
+            news_score = news.overall_score  # -1 to +1
+            # Bullish news + bullish bias = bonus. Bearish news + bearish bias = bonus.
+            if bias == MarketBias.BULLISH and news_score > 0:
+                news_pts = min(10, news_score * 15)
+            elif bias == MarketBias.BEARISH and news_score < 0:
+                news_pts = min(10, abs(news_score) * 15)
+            elif abs(news_score) > 0.3:
+                # Strong news AGAINST our bias = penalty
+                if (bias == MarketBias.BULLISH and news_score < -0.3) or (
+                    bias == MarketBias.BEARISH and news_score > 0.3
+                ):
+                    news_pts = -5
+                else:
+                    news_pts = 0
+            else:
+                news_pts = 0
+        except Exception:
+            news_pts = 0
+        score += news_pts
+        score_details.append(f"news={news_pts:.0f}")
+
+        # 7. Option efficiency (0-10)
         opt_pts = 10 if state.option.is_efficient else 3
         score += opt_pts
         score_details.append(f"opt={opt_pts}")
